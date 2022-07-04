@@ -7,7 +7,7 @@ import { ExcelExporter } from "./ExcelExporter";
 import { WorkItemsBuildControl } from "./WorkItemsBuildControl";
 import * as SDK from "azure-devops-extension-sdk";
 import { CommonServiceIds, getClient, IProjectInfo, IProjectPageService } from "azure-devops-extension-api";
-import { WorkItem, WorkItemTrackingRestClient } from "azure-devops-extension-api/WorkItemTracking";
+import { WorkItem, WorkItemExpand, WorkItemTrackingRestClient } from "azure-devops-extension-api/WorkItemTracking";
 import { ListSelection } from "azure-devops-ui/List";
 import { ColumnSelect, ITableRow, renderSimpleCell, Table } from "azure-devops-ui/Table";
 import { ObservableValue } from "azure-devops-ui/Core/Observable";
@@ -69,6 +69,7 @@ export class WorkItemsControl extends Component<{
       id: x.id,
       title: x.fields['System.Title'],
       state: x.fields['System.State'],
+      workItemType: x.fields['System.WorkItemType']
     }});
   }
 
@@ -80,6 +81,13 @@ export class WorkItemsControl extends Component<{
         readonly: true,
         renderCell: renderSimpleCell,
         width: new ObservableValue(-30),
+    },
+    {
+      id: "workItemType",
+      name: "Type",
+      readonly: true,
+      renderCell: renderSimpleCell,
+      width: new ObservableValue(-40),
     },
     {
         id: "title",
@@ -103,13 +111,46 @@ export class WorkItemsControl extends Component<{
     if(workItemRefs){
       //retrieve workitems
       const ids = workItemRefs.map(x => parseInt(x.id));
-      const workItems = await this.workItemClient?.getWorkItems(ids);
-      this.setState(prevState => ({
-        data: { ...prevState.data, 
-          workItems: workItems ? this.mapWorkItems(workItems): []
-        }
-      }));
+      const workItems = await this.workItemClient?.getWorkItems(ids, undefined, undefined, undefined, WorkItemExpand.Relations);
+      if(workItems){
+        const wips = await this.collectWorkItems(workItems);
+        this.setState(prevState => ({
+          data: { ...prevState.data, 
+            workItems: workItems ? this.mapWorkItems(wips): []
+          }
+        }));
+      }
     }
+  }
+
+  private async collectWorkItems(workItems: Array<WorkItem>) : Promise<Array<WorkItem>>{
+    const parentIdBugs : Array<number> = [];
+    const workItemsList : Array<WorkItem> = [];
+
+    workItems.forEach((wi) => {
+      const type = wi.fields['System.WorkItemType'];
+      if(type === 'Bug'){
+        const parentLink = wi.relations.find(x => x.rel === 'System.LinkTypes.Hierarchy-Reverse');
+        if(parentLink){
+          const parentId = parentLink.url.substring(parentLink.url.lastIndexOf('/') + 1);
+          parentIdBugs.push(parseInt(parentId));
+          return;
+        }
+      }
+      workItemsList.push(wi);
+    });
+
+    if(parentIdBugs.length > 0){
+      const workItemsParents = await this.workItemClient?.getWorkItems(parentIdBugs);
+      if(workItemsParents){
+        workItemsParents.forEach((wip) => {
+          if(!workItemsList.find(x => x.id === wip.id)){
+            workItemsList.push(wip);
+          }
+        });
+      }
+    }
+    return workItemsList;
   }
 
   private collectSelectedItems = () : Array<IWorkItem> => {
